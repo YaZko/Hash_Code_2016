@@ -9,5 +9,5 @@ out:
 	./main.native inputs/learn_and_teach.in
 
 clean:
-	rm -rf _build
+	$(OCB) -clean
 
