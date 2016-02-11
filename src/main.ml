@@ -6,7 +6,7 @@ let get_sol data =
 
 let _ =
    let file =
-     (try Sys.argv.(1) with _ -> "input") in
+     (try Sys.argv.(1) with _ -> failwith ("Specify a file name, please.")) in
    let d = parse file in
    let sol = get_sol d in
    out_sol file sol
