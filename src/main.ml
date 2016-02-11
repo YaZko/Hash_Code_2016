@@ -6,10 +6,14 @@ open Types
 let get_sol data = 
   { sol = Array.init data.nb_drones (fun _ -> []) }
 
+
+let init_clients data =
+  (0--(data.nb_orders - 1)) |> List.of_enum
+  
 let sq x = x * x
 
 let dist (r1,c1) (r2,c2) =
-  ceil ((sq (r1 - r2)) + (sq (c1 - c2)))
+  ceil (float_of_int (sq (r1 - r2)) + (sq (c1 - c2)))
   
 let _ =
   let file =

@@ -24,6 +24,8 @@ type data =
   order_type: int array array;
 }
 
+
+  
 let parse file: data =
   let f = BatScanf.Scanning.from_file file in
   Scanf.bscanf
