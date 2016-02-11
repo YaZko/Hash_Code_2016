@@ -7,10 +7,10 @@ type ware_stock = (id_w * stock) array
 type t = int (* time *)
 type pos = int * int
 type command =
-  | Load of id_p * int * id_w * id_d
+  | Load of id_p * int * id_w
   | Deliver of id_p * int * id_c
   | Unload of id_p * int * id_w
-  | Wait of int
+  | Wait of int 
 type state = Idle | Order of t * pos * command
 type drone = {
   pos : int * int;

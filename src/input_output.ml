@@ -1,5 +1,6 @@
 open Batteries
-
+open Types
+       
 type data =
 {
   nb_rows: int;
@@ -21,11 +22,6 @@ type data =
    order_length.(o) taille order_type.(o)
    *)
   order_type: int array array;
-}
-
-type sol =
-{
-  bar: int
 }
 
 let parse file: data =
@@ -157,10 +153,32 @@ let print_input {
   done;
   !s
 
-    
+
+   
+type sol =
+{
+  sol : (command list) array;
+}
+
+
 let out_sol file sol =
   (try Unix.mkdir "outputs" 0o755 with _ -> ());
   let (_, file) = String.split file "inputs/" in  
   let (file, _) = String.split file ".in" in  
   let oc = open_out ("outputs/" ^ file ^ ".out") in
+  Printf.fprintf oc "%d\n" (Array.fold_left (fun acc com_list -> acc + List.length com_list) 0 sol.sol);
+  Array.iteri
+    (fun id_d com_list ->
+     List.iter (fun com ->
+		match com with
+		| Load (idp,q,idw) ->
+		   Printf.fprintf oc "%d L %d %d %d\n" id_d idw idp q
+		| Unload (idp,q,idw) ->
+		   Printf.fprintf oc "%d U %d %d %d\n" id_d idw idp q
+		| Deliver (idp,q,idc) ->
+		   Printf.fprintf oc "%d D %d %d %d\n" id_d idc idp q
+		| Wait w ->
+		   Printf.fprintf oc "%d W %d\n" id_d w
+	       ) com_list
+    ) sol.sol;
   close_out oc
