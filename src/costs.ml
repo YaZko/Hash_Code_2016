@@ -8,8 +8,6 @@ let drones_needed quantity max_load =
   else
     1 + (quantity / max_load)
 
-let sum = List.fold_left (+) 0
-
 let compute_order_by_type data =
   let orders = Array.init data.nb_orders
     (fun order -> Array.make data.nb_prod_types 0)
