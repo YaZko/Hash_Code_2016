@@ -16,7 +16,10 @@ type data =
   nb_orders: int;
   order_address: (int*int) array;
   order_length: int array;
-  (* order_type.(o).(i) : ith item of order o *)
+  (* order_type.(o).(i) : ith "type" of order o
+   
+   order_length.(o) taille order_type.(o)
+   *)
   order_type: int array array;
 }
 
