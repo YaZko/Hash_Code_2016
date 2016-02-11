@@ -1,5 +1,6 @@
 open Batteries
 open Input_output
+open Types
 
 let get_sol data = 
   { bar = 1 }
