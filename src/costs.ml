@@ -36,3 +36,11 @@ let compute_orders_cost data =
     data.nb_orders
     (fun order -> orders_cost data orders order)
 
+let better_orders_order data =
+  let orders_cost = compute_orders_cost data in
+  let l = Array.fold_lefti
+    (fun l i o -> (o, orders_cost.(o)) :: l)
+    [] orders_cost
+  in
+  List.sort (fun o1 o2 -> compare (snd o1) (snd o2)) l
+
