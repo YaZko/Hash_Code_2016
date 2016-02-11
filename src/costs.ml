@@ -44,3 +44,19 @@ let better_orders_order data =
   in
   List.sort (fun o1 o2 -> compare (snd o2) (snd o1)) l
 
+exception Exit of int
+
+(** renvoie w disponible et fleet, w = -1 si pas de w *)
+let compute_storage data drone id_p quantity fleet wstock =
+  try begin for w = 0 to Array.length wstock - 1 do
+    if data.available_products.(w).(id_p) >= quantity then
+      raise (Exit w)
+  done;
+  (-1, fleet) (* aucun *)
+  end
+  with
+  | Exit w ->
+      wstock.(w).(id_p) <- wstock.(w).(id_p) - quantity;
+      fleet.stock.(id_p) <- fleet.stock.(id_p) - quantity;
+      (w, fleet)
+
