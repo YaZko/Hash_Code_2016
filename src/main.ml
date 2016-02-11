@@ -1,5 +1,6 @@
 open Batteries
 open Input_output
+open Score
 
 let get_sol data = 
   { bar = 1 }
