@@ -22,7 +22,7 @@ type data =
 
 type sol =
 {
-  bar: int
+
 }
 
 let parse file: data =

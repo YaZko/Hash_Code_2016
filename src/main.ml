@@ -4,7 +4,7 @@ open Score
 open Types
 
 let get_sol data = 
-  { bar = 1 }
+  { sol = Array.init data.nb_drones (fun _ -> []) }
 
 let _ =
   let file =
