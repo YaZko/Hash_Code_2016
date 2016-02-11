@@ -52,11 +52,11 @@ let compute_storage data drone id_p quantity fleet wstock =
     if data.available_products.(w).(id_p) >= quantity then
       raise (Exit w)
   done;
-  (-1, fleet) (* aucun *)
+  -1 (* aucun *)
   end
   with
   | Exit w ->
       wstock.(w).(id_p) <- wstock.(w).(id_p) - quantity;
       fleet.stock.(id_p) <- fleet.stock.(id_p) - quantity;
-      (w, fleet)
+      w
 
