@@ -32,23 +32,24 @@ let solve (d:data) (c: client) (f: fleet) (s: sol): sol =
   (* let nb_d = drones_needed d. *)
   s
 
-(** Compute a whole solution from an input d **)
-let solution1 (d: data): sol =
-  let rec aux (drones: fleet) (todo: clients) =
-    match todo with
-    | [] -> ()
-    | client::todo ->
-       let s = solve d client drones 
-       in aux drones todo
-  in
-  aux drones (init_clients d)
-         
+(* (\** Compute a whole solution from an input d **\) *)
+(* let solution1 (d: data): sol = *)
+(*   let rec aux (drones: fleet) (todo: clients) = *)
+(*     match todo with *)
+(*     | [] -> () *)
+(*     | client::todo -> *)
+(*        let s = solve d client drones  *)
+(*        in aux drones todo *)
+(*   in *)
+(*   aux drones (init_clients d) *)
+
+let init_warehouse (data: data) =
+  data.available_products
 
 let _ =
   let file =
     (try Sys.argv.(1) with _ -> failwith ("Specify a file name, please.")) in
   let d = parse file in
-  List.print Int.print stdout (init_clients d);
-  let sol = get_sol d in
-  out_sol file sol
+  let sol = Pwsol.naivesol (init_fleet d) d (init_warehouse d) in
+  out_sol file {sol}
 
