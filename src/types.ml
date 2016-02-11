@@ -2,8 +2,8 @@ type id_p = int
 type id_d = int
 type id_w = int
 type id_c = int
-type stock = (id_p, int) Hashtbl.t 
-type ware_stock = (id_w, stock) Hashtbl.t 
+type stock = (id_p * int) array
+type ware_stock = (id_w * stock) array
 type t = int (* time *)
 type pos = int * int
 type command =
@@ -18,6 +18,6 @@ type drone = {
   state : state;
   poids : int;
 }
-type fleat = (id_d, drone) Hashtbl.t
-type client = (id_p, int) Hashtbl.t
+type fleat = (id_d * drone) array
+type client = (id_p * int) array
 type clients = (id_c * client) list
