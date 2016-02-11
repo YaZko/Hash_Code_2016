@@ -20,4 +20,4 @@ type drone = {
 }
 type fleat = (id_d, drone) Hashtbl.t
 type client = (id_p, int) Hashtbl.t
-type clients = (id_c, client) Hashtbl.t
+type clients = (id_c * client) list
