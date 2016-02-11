@@ -47,7 +47,6 @@ let init_warehouse (data: data) =
   data.available_products
 
 let _ =
-  Random.self_init ();
   let file =
     (try Sys.argv.(1) with _ -> failwith ("Specify a file name, please.")) in
   let d = parse file in
