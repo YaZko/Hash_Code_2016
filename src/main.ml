@@ -50,6 +50,7 @@ let _ =
   let file =
     (try Sys.argv.(1) with _ -> failwith ("Specify a file name, please.")) in
   let d = parse file in
+  Vis.vis d;
   let sol = Pwsol.naivesol (init_fleet d) d (init_warehouse d) in
   out_sol file {sol}
 
