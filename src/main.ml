@@ -47,23 +47,22 @@ let init_warehouse (data: data) =
   data.available_products
 
 let _ =
+  let d = parse "inputs/ex.in" in
+  let sol = Array.init d.nb_drones
+  		       (fun id_d ->
+  			match id_d with
+  			  0 -> Load (0,1,0)::Load(1,1,0)::Deliver(0,1,0)
+  			       :: Load (2,1,1) :: Deliver (2,1,0)::[]
+  			| 1 -> Load (2,1,1) :: Deliver (2,1,2)::
+  				 Load (0,1,0):: Deliver (0,1,1)::[]
+  			| _ -> []
+  		       )
+  in
+  assert (score sol (parse "inputs/ex.in") = 194);
   let file =
     (try Sys.argv.(1) with _ -> failwith ("Specify a file name, please.")) in
   let d = parse file in
   let sol = Pwsol.naivesol (init_fleet d) d (init_warehouse d) in
-
-  (* let sol = Array.init d.nb_drones *)
-  (* 		       (fun id_d -> *)
-
-  (* 			match id_d with *)
-  (* 			  0 -> Load (0,1,0)::Load(1,1,0)::Deliver(0,1,0) *)
-  (* 			       :: Load (2,1,1) :: Deliver (2,1,0)::[] *)
-  (* 			| 1 -> Load (2,1,1) :: Deliver (2,1,2):: *)
-  (* 				 Load (0,1,0):: Deliver (0,1,1)::[] *)
-  (* 			| _ -> [] *)
-  (* 		       ) *)
-  (*   in *)
-  
   let sc = score sol d in
   Printf.fprintf stdout "Score: %d\n" sc;
   out_sol file {sol}
