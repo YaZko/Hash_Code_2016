@@ -26,10 +26,6 @@ let print_fleet oc (f:fleet) =
 	  Printf.fprintf oc "\n";
 	 )
 
-let command_print oc =
-  function
-    Load(idp,q,idw) -> Printf.fprintf oc "Load (%d,%d,%d)" idp q idw
-  | _ -> failwith "bla"
 
 let print_wstock oc wstock =
   wstock |> Array.iteri
@@ -135,7 +131,7 @@ let naivesol (f: fleet) (data: data) wstock =
   let sol = Array.init data.nb_drones (fun i -> []) in
   let todo = ref (OSet.of_list (sort_orders' data)) in
   while not (OSet.is_empty !todo) do
-    Printf.fprintf stdout "Todo has %d elements\n" (OSet.cardinal !todo);
+    (* Printf.fprintf stdout "Todo has %d elements\n" (OSet.cardinal !todo); *)
     
     ( let ((id_c,o),todo') = OSet.pop !todo in
       todo := todo';
