@@ -8,14 +8,15 @@ use utf8;
 use File::Basename;
 use Data::Dumper;
 use POSIX qw(ceil);
-use List::Util qw(first all reduce sum min);
+use List::Util qw(first all reduce sum min shuffle max);
+use GD;
 
 # Parse stuff
 my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/busy_day.in';
+my $File = $ARGV[0] // 'inputs/redundancy.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -31,28 +32,36 @@ my @Odone;                 # times of orders completion
 
 # Preprocessings of input
 my $DiagLength = sqrt(sqr($Rows) + sqr($Cols));
-my $Heart      = orders_heart();
-my $WHeart     = warehouse_heart();
-say "@$Heart @$WHeart $Cols $Rows ", "@{ $Wpos[0] }";
 my $MeanOrderScore = sum(map { order_base_score($_) } 0 .. $#Opos) / @Opos;
-my @Orders =
-  map  { $_->[0] }
-  sort { $a->[1] <=> $b->[1] }
-  map  { [ $_, order_score($_, 7, 2) ] } 0 .. $#Onbitems;
-my @Orders_after =
-  map  { $_->[0] }
-  sort { $a->[1] <=> $b->[1] }
-  map  { [ $_, order_score($_, 0, 4) ] } 0 .. $#Onbitems;
+my @OrderWeights = map { order_weight($_) } 0 .. $#Opos;
+my $MeanOrderWeight = sum(@OrderWeights) / @Opos;
+my $MeanOrderWeightSTD = std_dev(\@OrderWeights);
+my @CWs; # Closest Warehouses
+foreach my $o (0 .. $#Opos) {
+    $CWs[$o] = closest_warehouses($o);
+}
+
+say "ColsxRows: ${Cols}x$Rows ";
+say "Start: @{ $Wpos[0] }";
+say "means(score,weight,weight std): $MeanOrderScore $MeanOrderWeight $MeanOrderWeightSTD";
+my @Orders;
+if ($File =~ /mother_of_all_warehouses/) {
+    @Orders = compute_generic_order(\&order_score_mother);
+}
+else {
+    @Orders = compute_generic_order(\&order_score_generic);
+}
 
 # Main Loop
 my $Count = 0;
 while (defined(my $order = select_order())) {
     do_order($order) or last;
     $Count++;
-    @Orders = @Orders_after if $Count == 19;
+    @Orders = compute_generic_order(\&order_score_generic) if $Count % 25 == 0 and $File =~ /redundancy/;
+    @Orders = compute_generic_order(\&order_score_generic) if $Count % 30 == 0 and $File =~ /busy_day/;
 }
 say scalar(@Orders);
-die "Not done all orders" unless @Orders = @Odone;
+die "Not done all orders" unless @Orders == @Odone;
 check_times();
 write_commands();
 
@@ -61,25 +70,25 @@ $Score += ceil(100 * (($Turns - $_) / $Turns)) for @Odone;
 say "SCORE:$Score";
 say scalar(@Ostock) * 100;
 
-sub orders_heart    { pos_heart(\@Opos); }
-sub warehouse_heart { pos_heart(\@Wpos); }
+# Draw map
+draw_map();
 
-sub pos_heart {
+exit 0;
+
+sub compute_generic_order {
+    my $sub = shift;
+    map  { $_->[0] }
+    sort { $a->[1] <=> $b->[1] }
+    map  { [ $_, $sub->($_) ] } 0 .. $#Onbitems
+}
+
+sub mean_pos {
+    # XXX not used
     my $positions = shift;
-    my $heart =
+    my $mean_pos =
       reduce { [ $a->[0] + $b->[0], $a->[1] + $b->[1] ] } @$positions;
-    my @heart = map { $_ / @$positions } @$heart;
-    my @near_to_heart =
-      grep {
-              abs($_->[0] - $heart[0]) < $Rows / 2
-          and abs($_->[1] - $heart[1]) < $Cols / 2
-      } @$positions;
-
-    # Better new heart
-    $heart =
-      reduce { [ $a->[0] + $b->[0], $a->[1] + $b->[1] ] } @$positions;
-    @heart = map { $_ / @$positions } @$heart;
-    return \@heart;
+    my @mean_pos = map { $_ / @$positions } @$mean_pos;
+    return \@mean_pos;
 }
 
 sub check_times {
@@ -97,22 +106,68 @@ sub order_base_score {
     foreach my $t (keys %{ $Ostock[$o] }) {
         $score += $Ostock[$o]{$t} * $PTW[$t];
     }
+    $score += scalar(keys %{ $Ostock[$o] }) * 7 if $File =~ /busy_day/;
     return $score;    # less is better
 }
 
-sub order_score {
-    my ($o, $start_weight, $heart_weight) = @_;
-    my $score = order_base_score($o);
-    my $turns_to_heart = turns_between_positions($Opos[$o], $Heart);
-    my $turns_to_start_pos =
-      turns_between_positions($Opos[$o], $Wpos[0]);
-    my $turns_to_wheart = turns_between_positions($Opos[$o], $WHeart);
-    $score +=
-      $MeanOrderScore *
-      ($heart_weight * $turns_to_heart / $DiagLength +
-          $start_weight * $turns_to_start_pos / $DiagLength +
-          1 * $turns_to_wheart / $DiagLength);
-    return $score;    # less is better
+sub order_score_generic {
+    my $o = shift;
+    my $wc = $CWs[$o];
+    my @Ddistances = map { turns_between_positions($DP[$_], $Wpos[$wc->[0]]) } 0 .. $Drones - 1;
+    my $Dmean_dist = mean(\@Ddistances);
+    my @turns_to_w = map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
+    my $dist_turns = mean(\@turns_to_w);
+    my $weight = order_weight($o);
+    my %t_scores;
+    foreach my $t (keys %{ $Ostock[$o] }) {
+        $t_scores{$t} = ceil(($Ostock[$o]{$t} * $PTW[$t]) / $MaxPayload);
+    }
+    my $types_count = keys %t_scores;
+    my $drones_approx = ceil($weight / $MaxPayload) * log(4 + $types_count);
+    return $drones_approx * (3 * $dist_turns / 2 + $Dmean_dist / 2) + 2 * sum(values %t_scores);
+}
+
+sub closest_warehouses {
+    my $o = shift;
+    my @dists = map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
+    my @warehouses =
+      sort {
+          turns_between_positions($Wpos[$a], $Opos[$o]) <=>
+          turns_between_positions($Wpos[$b], $Opos[$o])
+      } 0 .. $#Wpos;
+    return \@warehouses;
+}
+
+sub order_score_mother {
+    my $o = shift;
+    my $dist_turns = turns_between_positions($Wpos[0], $Opos[$o]);
+    my $weight = order_weight($o);
+    my %t_scores;
+    foreach my $t (keys %{ $Ostock[$o] }) {
+        $t_scores{$t} = ceil(($Ostock[$o]{$t} * $PTW[$t]) / $MaxPayload);
+    }
+    my $types_count = keys %t_scores;
+    my $drones_approx = ceil($weight / $MaxPayload);
+    return 2 * $drones_approx * $dist_turns + 2 * sum(values %t_scores);
+}
+
+sub order_weight {
+    my $o = shift;
+    my $weight;
+    foreach my $t (keys %{ $Ostock[$o] }) {
+        $weight += $Ostock[$o]{$t} * $PTW[$t];
+    }
+    return $weight;
+}
+
+sub warehouse_weight {
+    # XXX not used
+    my $w = shift;
+    my $weight;
+    foreach my $t (keys %{ $Wstock[$w] }) {
+        $weight += $Wstock[$w]{$t} * $PTW[$t];
+    }
+    return $weight;
 }
 
 sub select_order {
@@ -123,7 +178,9 @@ sub select_order {
 
 sub type_score {
     my ($o, $t) = @_;
-    $Ostock[$o]{$t} * $PTW[$t];
+    return 1 / ($Ostock[$o]{$t} * $PTW[$t]) if $File =~ /mother_of_all_warehouses/;
+    return 1 / ($Ostock[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
+    return $Ostock[$o]{$t} * $PTW[$t];
 }
 
 sub do_order {
@@ -131,15 +188,16 @@ sub do_order {
     my @otypes =
       sort { type_score($o, $a) <=> type_score($o, $b) }
       sort keys %{ $Ostock[$o] };
-    foreach my $t (@otypes) {
+    while (1) {
+        my $t = first { $Ostock[$o]{$_} > 0 } @otypes;
+        last unless defined $t;
         next unless $Ostock[$o]{$t} > 0;
         my $q = $Ostock[$o]{$t};
         my ($w, $qw) = find_warehouse_where_load($t, $q, $o);
-        my ($d, $qd) = find_drone_for_order($t, $qw, $o, $w);
+        my $d = find_drone_for_order($t, $qw, $o, $w);
         say "Too much turns" and return 0 unless defined $d;
         die "do_order:Weight problem" if $d == -1;
         die "do_order:No warehouse found" unless defined $w;
-        die "do_order:qd $qd <= 0" unless $qd > 0;
 
         my @loads;
         my $first_loads = salvage_warehouse(\@otypes, $o, $d, $w);
@@ -148,18 +206,20 @@ sub do_order {
         while (not check_order_done($o) and $DW[$d] < $MaxPayload / 2.2) {
             $count++;
             last if $count > 4;
-            my $tt = first { $Ostock[$o]{$_} > 0 } @otypes;
-            ($w, $qw) =
+            my $tt =
+              first { $Ostock[$o]{$_} > 0 and $PTW[$_] + $DW[$d] <= $MaxPayload } @otypes;
+            last unless defined $tt;
+            $w =
               find_better_warehouse_where_load($tt, $Ostock[$o]{$tt}, $o, $d);
             my $newloads = salvage_warehouse(\@otypes, $o, $d, $w);
             last unless @$newloads;
             push @loads, @$newloads;
         }
+        die "No loads" unless @loads;
         $DT[$d] += turns_between_positions($DP[$d], $Opos[$o]);
         $DP[$d] = $Opos[$o];
         foreach my $load (@loads) {
             my ($q, $t) = @$load;
-            print Dumper(\@loads) unless defined $t;
             deliver($d, $q, $t, $o);
         }
         if (check_order_done($o)) {
@@ -197,28 +257,33 @@ sub find_drone_for_order {
           turns_between_positions($DP[$_], $Opos[$o]) <= $Turns
     } 0 .. $#DT;
     unless (@usable_drones) {
-        say "No usable drones…";
-        return;
+        die "No usable drones…";
     }
     my @light_drones;
     my $qd;
-    foreach my $qq (reverse 1 .. $q) {
+    while ($q > 0) {
         @light_drones =
-          grep { $DW[$_] + $qq * $PTW[$t] <= $MaxPayload } @usable_drones;
+          grep { $DW[$_] + $q * $PTW[$t] <= $MaxPayload } @usable_drones;
         if (@light_drones) {
-            $qd = $qq;
+            $qd = $q;
             last;
         }
+        $q--;
     }
     unless (@light_drones) {
         return -1;
     }
-    my ($d) = sort { $DT[$a] <=> $DT[$b] } @light_drones;
-    my $qw;
-    ($w, $qw) = find_better_warehouse_where_load($t, $q, $o, $d);
-    $qd = min($qd, $qw);
-
-    return ($d, $qd);
+    my $d;
+    if ($File =~ /mother_of_all_warehouses/) {
+        ($d) = sort { $DT[$a] <=> $DT[$b] } @light_drones;
+    }
+    else {
+        ($d) = sort {
+            $DT[$a] + turns_between_positions($DP[$a], $Wpos[$w])
+            <=> $DT[$b] + turns_between_positions($DP[$b], $Wpos[$w]) } @light_drones;
+    }
+    $w = find_better_warehouse_where_load($t, $qd, $o, $d);
+    return $d;
 }
 
 sub find_warehouse_where_load {
@@ -243,33 +308,23 @@ sub find_better_warehouse_where_load {
               turns_between_positions($DP[$d], $Wpos[$_])
         ]
       } 0 .. $#Wstock;
-    pick_warehouse_to_load(\@warehouses, $t, $q);
+    my ($w) = pick_warehouse_to_load(\@warehouses, $t, $q);
+    return $w;
 }
 
 sub pick_warehouse_to_load {
     my ($warehouses, $t, $q) = @_;
     my $qw;
-    foreach my $qq (reverse 1 .. $q) {
+    while ($q > 0) {
         foreach my $ww (@$warehouses) {
-            if ($Wstock[$ww]{$t} and $Wstock[$ww]{$t} >= $qq) {
-                $qw = $qq;
+            if ($Wstock[$ww]{$t} and $Wstock[$ww]{$t} >= $q) {
+                $qw = $q;
                 return ($ww, $qw);
             }
         }
+        $q--;
     }
-    die "pick_warehouse_to_load:no warehouse found:$t,$q\n";
-}
-
-sub check_in_initial_warehouse {
-    my ($t, $q) = @_;
-    my $qw;
-    foreach my $qq (reverse 1 .. $q) {
-        if ($Wstock[0]{$t} and $Wstock[0]{$t} >= $qq) {
-            $qw = $qq;
-            return $qw;
-        }
-    }
-    return 0;
+    die "pick_warehouse_to_load:no warehouse found:$t\n";
 }
 
 sub check_weight {
@@ -305,6 +360,7 @@ sub deliver {
 
 sub turns_between_positions {
     my ($p1, $p2) = @_;
+    #return 0 if $p1->[0] == $p2->[0] and $p1->[1] == $p2->[0];
     return ceil(sqrt(sqr($p1->[0] - $p2->[0]) + sqr($p1->[1] - $p2->[1])));
 }
 
@@ -347,4 +403,47 @@ sub parse {
             $Ostock[$o]{$1}++;
         }
     }
+}
+
+sub std_dev {
+    my $n = @{ $_[0] };
+    my $sum = sum(@{ $_[0] });
+    $sum ? sqrt((sum(map sqr($_), @{ $_[0] }) - sqr($sum) / $n) / $n) : -1;
+}
+
+sub mean {
+    my $nums = shift;
+    return 0 unless @$nums;
+    my $sum = sum(@$nums);
+    return $sum / @$nums;
+}
+
+sub draw_map {
+    my $im = GD::Image->new($Rows * 3, $Cols * 3);
+    my $white = $im->colorAllocate(255,255,255);
+    my $black = $im->colorAllocate(0,0,0);
+    my $red = $im->colorAllocate(255,0,0);
+    my $blue = $im->colorAllocate(0,0,255);
+    my $green = $im->colorAllocate(0,255,0);
+    open(my $fh, '>', 'map.png') or die "draw_map:$!";
+    binmode $fh;
+    $im->rectangle(0,0,$Rows * 3,$Cols * 3, $white);
+    my $count = 0;
+    foreach my $pos (@Opos) {
+        my ($x, $y) = map { $_ * 3 } @$pos;
+        $im->filledEllipse($x,$y,5,5, $blue);
+        $count++;
+    }
+    foreach my $o (@Orders[0..300]) {
+        my $pos = $Opos[$o];
+        my ($x, $y) = map { $_ * 3 } @$pos;
+        $im->filledEllipse($x,$y,10,10, $blue);
+    }
+    foreach my $pos (@Wpos) {
+        my ($x, $y) = map { $_ * 3 } @$pos;
+        $im->filledEllipse($x,$y,15,15, $red);
+    }
+    $im->filledEllipse($Wpos[0]->[0] * 3, $Wpos[0]->[1] * 3, 30, 30, $green);
+    print $fh $im->png;
+    close $fh;
 }
