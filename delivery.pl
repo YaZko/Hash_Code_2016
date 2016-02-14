@@ -29,12 +29,9 @@ for (0 .. $Drones - 1) {
 
 my @CMDS;                  # Commands to be output
 my @Odone;                 # times of orders completion
+my %Odone;                 # whether order is done
 
 # Preprocessings of input
-my $DiagLength         = sqrt(sqr($Rows) + sqr($Cols));
-my @OrderWeights       = map { order_weight($_) } 0 .. $#Opos;
-my $MeanOrderWeight    = sum(@OrderWeights) / @Opos;
-my $MeanOrderWeightSTD = std_dev(\@OrderWeights);
 my @CWs;                   # Closest Warehouses
 foreach my $o (0 .. $#Opos) {
     $CWs[$o] = closest_warehouses($o);
@@ -42,7 +39,6 @@ foreach my $o (0 .. $#Opos) {
 
 say "ColsxRows: ${Cols}x$Rows ";
 say "Start: @{ $Wpos[0] }";
-say "means(score,weight,weight std): $MeanOrderWeight $MeanOrderWeightSTD";
 my @Orders;
 if ($File =~ /mother_of_all_warehouses/) {
     @Orders = compute_generic_order(\&order_score_mother);
@@ -83,16 +79,6 @@ sub compute_generic_order {
       map  { [ $_, $sub->($_) ] } 0 .. $#Onbitems;
 }
 
-sub mean_pos {
-
-    # XXX not used
-    my $positions = shift;
-    my $mean_pos =
-      reduce { [ $a->[0] + $b->[0], $a->[1] + $b->[1] ] } @$positions;
-    my @mean_pos = map { $_ / @$positions } @$mean_pos;
-    return \@mean_pos;
-}
-
 sub check_times {
     all { $DT[$_] <= $Turns } 0 .. $#DT or die "check_times";
 }
@@ -103,11 +89,11 @@ sub check_order_done {
 }
 
 sub order_score_generic {
-    my $o          = shift;
-    my $wc         = $CWs[$o];
-    my @Ddistances = map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
+    my $o           = shift;
+    my $wc          = $CWs[$o];
+    my @drone_dists = map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
       0 .. $Drones - 1;
-    my $Dmean_dist = mean(\@Ddistances);
+    my $drone_dists_mean = mean(\@drone_dists);
     my @turns_to_w =
       map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
     my $dist_turns = mean(\@turns_to_w);
@@ -124,10 +110,10 @@ sub order_score_generic {
       if $File =~ /redundancy/;
 
     # Some "random" magic in numbers :)
-    return $drones_approx * (3 * $dist_turns / 2.3 + $Dmean_dist / 1.5) +
+    return $drones_approx * (3 * $dist_turns / 2.3 + $drone_dists_mean / 1.5) +
       2 * sum(values %t_scores)
       if $File =~ /redundancy/;
-    return $drones_approx * (3 * $dist_turns / 2 + $Dmean_dist / 2) +
+    return $drones_approx * (3 * $dist_turns / 2 + $drone_dists_mean / 2) +
       2 * sum(values %t_scores);
 }
 
@@ -190,9 +176,8 @@ sub do_order {
     my $o = shift;
     my @otypes =
       sort { type_score($o, $a) <=> type_score($o, $b) }
-
-      #sort { max_of_type($o, $a) <=> max_of_type($o, $b) }
       sort { $PTW[$a] <=> $PTW[$b] }
+      grep { $Ostock[$o]{$_} > 0 and $PTW[$_] > 0 }
       sort keys %{ $Ostock[$o] };
     while (1) {
         my $t = first { $Ostock[$o]{$_} > 0 } @otypes;
@@ -208,31 +193,48 @@ sub do_order {
         my @loads;
         my $first_loads = salvage_warehouse(\@otypes, $o, $d, $w);
         push @loads, @$first_loads;
-        my $count = 0;
-        while (not check_order_done($o) and $DW[$d] < $MaxPayload / 2.2) {
-            $count++;
-            last if $count > 1 and $File =~ /redundancy/;
-            last if $count > 2 and $File =~ /busy_day/;
-            my $tt = first {
-                      $Ostock[$o]{$_} > 0
-                  and $PTW[$_] + $DW[$d] <= $MaxPayload
-            } @otypes;
-            last unless defined $tt;
-            $w =
-              find_better_warehouse_where_load($tt, $Ostock[$o]{$tt}, $o, $d);
-            my $newloads = salvage_warehouse(\@otypes, $o, $d, $w);
-            last unless @$newloads;
-            push @loads, @$newloads;
+        die "No first loads" unless @loads;
+        if ($DW[$d] < $MaxPayload) {
+
+            # secundary orders for $d
+            my $factor = 3;
+            $factor = 2 if $File =~ /mother_of_all_warehouses/;
+            $factor = 3 if $File =~ /redundancy/;
+            my $radius_factor = 5.5;
+            $radius_factor = 3 if $File =~ /mother_of_all_warehouses/;
+            $radius_factor = 2 if $File =~ /redundancy/;
+            my @orders = grep {
+                $Onbitems[$_] > 0
+                and $_ != $o
+                and turns_between_positions($DP[$d], $Opos[$_])
+                  + turns_between_positions($Opos[$_], $Wpos[$w])
+                  < $factor * turns_between_positions($Opos[$o], $Wpos[$w])
+                and turns_between_positions($Opos[$_], $Opos[$o])
+                  < turns_between_positions($Opos[$o], $Wpos[$w]) / $radius_factor
+            } @Orders;
+            my $payload_factor = 5 / 6;
+            $payload_factor = 4 / 5 if $File =~ /mother_of_all_warehouses/;
+            $payload_factor = 4 / 5 if $File =~ /redundancy/;
+
+            for my $o2 (@orders) {
+                if ($DW[$d] < $payload_factor * $MaxPayload) {
+                    my @otypes =
+                      sort { type_score($o2, $a) <=> type_score($o2, $b) }
+                      sort { $PTW[$a] <=> $PTW[$b] }
+                      grep { $Ostock[$o2]{$_} > 0 and $PTW[$_] > 0 }
+                      sort keys %{ $Ostock[$o2] };
+                    my $newloads = salvage_warehouse(\@otypes, $o2, $d, $w);
+                    push @loads, @$newloads if @$newloads;
+                }
+            }
         }
-        die "No loads" unless @loads;
-        $DT[$d] += turns_between_positions($DP[$d], $Opos[$o]);
-        $DP[$d] = $Opos[$o];
         foreach my $load (@loads) {
-            my ($q, $t) = @$load;
+            my ($q, $t, $o) = @$load;
             deliver($d, $q, $t, $o);
-        }
-        if (check_order_done($o)) {
-            push @Odone, $DT[$d] - 1;
+            if (check_order_done($o) and not $Odone{$o}) {
+                push @Odone, $DT[$d] - 1;
+                $Odone{$o}++;
+            }
         }
     }
     return 1;
@@ -240,7 +242,6 @@ sub do_order {
 
 sub salvage_warehouse {
     my ($otypes, $o, $d, $w) = @_;
-    $DT[$d] += turns_between_positions($DP[$d], $Wpos[$w]);
     my @loads;
     TYPE: foreach my $t (@$otypes) {
         my $q = $Ostock[$o]{$t};
@@ -248,7 +249,7 @@ sub salvage_warehouse {
             if (    $Wstock[$w]{$t} >= $q
                 and $q * $PTW[$t] + $DW[$d] <= $MaxPayload)
             {
-                push @loads, [ $q, $t ];
+                push @loads, [ $q, $t, $o ];
                 load($d, $q, $t, $w, $o);
                 next TYPE;
             }
@@ -353,6 +354,7 @@ sub load {
     $Wstock[$w]{$t} -= $q;
     die "load:$d,$w,$t,$q:no stock" if $Wstock[$w]{$t} < 0;
     $DT[$d] += 1;
+    $DT[$d] += turns_between_positions($DP[$d], $Wpos[$w]);
     $DP[$d] = $Wpos[$w];
     $Ostock[$o]{$t} -= $q;
     $Onbitems[$o]   -= $q;
@@ -365,6 +367,8 @@ sub deliver {
     $DI[$d]{$t} -= $q;
     $DW[$d] -= $q * $PTW[$t];
     $DT[$d] += 1;
+    $DT[$d] += turns_between_positions($DP[$d], $Opos[$o]);
+    $DP[$d] = $Opos[$o];
     die "deliver:$d,$o,$t,$q:not enough in inventory for that"
       if $DI[$d]{$t} < 0;
     die "deliver:$d,$o,$t,$q:weight problem" unless check_weight($d);
