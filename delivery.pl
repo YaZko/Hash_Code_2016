@@ -16,7 +16,7 @@ my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/busy_day.in';
+my $File = $ARGV[0] // 'inputs/redundancy.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -50,10 +50,10 @@ else {
 # Main Loop
 my $Count = 0;
 while (defined(my $order = select_order())) {
-    do_order($order) or last;
+    do_order($order);
     $Count++;
     @Orders = compute_generic_order(\&order_score_generic)
-      if $Count % 25 == 0 and $File =~ /redundancy/;
+      if $Count % 30 == 0 and $File =~ /redundancy/;
     @Orders = compute_generic_order(\&order_score_generic)
       if $Count % 30 == 0 and $File =~ /busy_day/;
 }
@@ -183,12 +183,10 @@ sub do_order {
     while (1) {
         my $t = first { $Ostock[$o]{$_} > 0 } @otypes;
         last unless defined $t;
-        next unless $Ostock[$o]{$t} > 0;
         my $q = $Ostock[$o]{$t};
         my ($w, $qw) = find_warehouse_where_load($t, $q, $o);
-        my $d = find_drone_for_order($t, $qw, $o, $w);
-        say "Too much turns" and return 0 unless defined $d;
-        die "do_order:Weight problem" if $d == -1;
+        my $d;
+        ($d, $w) = find_drone_for_order($t, $qw, $o, $w);
         die "do_order:No warehouse found" unless defined $w;
 
         my @loads;
@@ -282,7 +280,7 @@ sub find_drone_for_order {
         } @usable_drones;
     }
     $w = find_better_warehouse_where_load($t, $q, $o, $d);
-    return $d;
+    return ($d, $w);
 }
 
 sub warehouse_suitability_for_order {
