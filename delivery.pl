@@ -93,6 +93,7 @@ sub order_score_generic {
     my $wc          = $CWs[$o];
     my @drone_dists = map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
       0 .. $Drones - 1;
+    @drone_dists = (sort @drone_dists)[0..3] if $File =~ /busy_day/;
     my $drone_dists_mean = mean(\@drone_dists);
     my @turns_to_w =
       map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
