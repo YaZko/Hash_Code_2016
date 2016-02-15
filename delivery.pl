@@ -7,6 +7,7 @@ use open qw(:std :utf8);
 use utf8;
 use File::Basename;
 use Data::Dumper;
+use Algorithm::Permute;
 use POSIX qw(ceil);
 use List::Util qw(first all reduce sum min shuffle max);
 use GD;
@@ -16,7 +17,7 @@ my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/redundancy.in';
+my $File = $ARGV[0] // 'inputs/busy_day.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -160,9 +161,9 @@ sub select_order {
 
 sub type_score {
     my ($o, $t) = @_;
-    return 1 / ($Ostock[$o]{$t} * $PTW[$t])
+    return - ($Ostock[$o]{$t} * $PTW[$t])
       if $File =~ /mother_of_all_warehouses/;
-    return 1 / ($Ostock[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
+    return - ($Ostock[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
     return $Ostock[$o]{$t} * $PTW[$t];
 }
 
@@ -171,6 +172,11 @@ sub max_of_type {
     my $n = $Ostock[$o]{$t};
     my $q = int($MaxPayload / $PTW[$t]);
     return min($n, $q) * $PTW[$t];
+}
+
+sub mean_pos {
+    my ($pos1, $w1, $pos2) = @_;
+    [$w1 * $pos1->[0] + (1 - $w1) * $pos2->[0], $w1 * $pos1->[1] + (1 - $w1) * $pos2->[1]]
 }
 
 sub do_order {
@@ -186,30 +192,27 @@ sub do_order {
         my $q = $Ostock[$o]{$t};
         my ($w, $qw) = find_warehouse_where_load($t, $q, $o);
         my $d;
+        my $old_w = $w;
         ($d, $w) = find_drone_for_order($t, $qw, $o, $w);
         die "do_order:No warehouse found" unless defined $w;
 
-        my @loads;
+        my %loads;
         my $first_loads = salvage_warehouse(\@otypes, $o, $d, $w);
-        push @loads, @$first_loads;
-        die "No first loads" unless @loads;
+        $loads{$o} = [];
+        push @{ $loads{$o} }, @$first_loads;
+        die "No first loads" unless @{ $loads{$o} };
         if ($DW[$d] < $MaxPayload) {
 
             # secundary orders for $d
-            my $factor = 3;
-            $factor = 2 if $File =~ /mother_of_all_warehouses/;
-            $factor = 3 if $File =~ /redundancy/;
-            my $radius_factor = 5.5;
-            $radius_factor = 3 if $File =~ /mother_of_all_warehouses/;
-            $radius_factor = 2 if $File =~ /redundancy/;
+            $old_w = $w if $File =~ /busy_day/;
+            my $factor = 0.20;
+            $factor = 0.30 if $File =~ /mother_of_all_warehouses/;
+            $factor = 0.30 if $File =~ /redundancy/;
             my @orders = grep {
                 $Onbitems[$_] > 0
                 and $_ != $o
-                and turns_between_positions($DP[$d], $Opos[$_])
-                  + turns_between_positions($Opos[$_], $Wpos[$w])
-                  < $factor * turns_between_positions($Opos[$o], $Wpos[$w])
-                and turns_between_positions($Opos[$_], $Opos[$o])
-                  < turns_between_positions($Opos[$o], $Wpos[$w]) / $radius_factor
+                and turns_between_positions($Opos[$o], $Opos[$_])
+                  < $factor * turns_between_positions($Opos[$o], $Wpos[$old_w])
             } @Orders;
             my $payload_factor = 5 / 6;
             $payload_factor = 4 / 5 if $File =~ /mother_of_all_warehouses/;
@@ -223,20 +226,41 @@ sub do_order {
                       grep { $Ostock[$o2]{$_} > 0 and $PTW[$_] > 0 }
                       sort keys %{ $Ostock[$o2] };
                     my $newloads = salvage_warehouse(\@otypes, $o2, $d, $w);
-                    push @loads, @$newloads if @$newloads;
+                    next unless @$newloads;
+                    $loads{$o2} = [];
+                    push @{ $loads{$o2} }, @$newloads if @$newloads;
                 }
             }
         }
-        foreach my $load (@loads) {
-            my ($q, $t, $o) = @$load;
-            deliver($d, $q, $t, $o);
-            if (check_order_done($o) and not $Odone{$o}) {
-                push @Odone, $DT[$d] - 1;
-                $Odone{$o}++;
+        my @orders = keys %loads;
+        my @better_orders_order = @orders;
+        my $wins = compute_path_dist(\@orders, $DP[$d]);
+        Algorithm::Permute::permute {
+            my $new = compute_path_dist(\@orders, $DP[$d]);
+            @better_orders_order = @orders if $new < $wins;
+        } @orders;
+        foreach my $oo (@better_orders_order) {
+            my $ooloads = $loads{$oo};
+            foreach my $load (@$ooloads) {
+                my ($q, $t, $o) = @$load;
+                deliver($d, $q, $t, $o);
+                if (check_order_done($o) and not $Odone{$o}) {
+                    push @Odone, $DT[$d] - 1;
+                    $Odone{$o}++;
+                }
             }
         }
     }
     return 1;
+}
+
+sub compute_path_dist {
+    my ($orders, $init_pos) = @_;
+    my $turns = turns_between_positions($init_pos, $Opos[$orders->[0]]);
+    for (my $i = 0; $i < $#{ $orders }; $i++) {
+        $turns += turns_between_positions($Opos[$orders->[$i]], $Opos[$orders->[$i + 1]]);
+    }
+    return $turns;
 }
 
 sub salvage_warehouse {
