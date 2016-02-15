@@ -17,7 +17,7 @@ my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/busy_day.in';
+my $File = $ARGV[0] // 'inputs/redundancy.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -232,12 +232,13 @@ sub do_order {
                 }
             }
         }
-        my @orders = keys %loads;
+        my @orders = sort keys %loads;
         my @better_orders_order = @orders;
         my $wins = compute_path_dist(\@orders, $DP[$d]);
         Algorithm::Permute::permute {
             my $new = compute_path_dist(\@orders, $DP[$d]);
             @better_orders_order = @orders if $new < $wins;
+            $wins = $new;
         } @orders;
         foreach my $oo (@better_orders_order) {
             my $ooloads = $loads{$oo};
@@ -260,6 +261,8 @@ sub compute_path_dist {
     for (my $i = 0; $i < $#{ $orders }; $i++) {
         $turns += turns_between_positions($Opos[$orders->[$i]], $Opos[$orders->[$i + 1]]);
     }
+    $turns += turns_between_positions($Opos[$orders->[$#{ $orders }]], $Wpos[0])
+      if $File =~ /mother_of_all_warehouses/;
     return $turns;
 }
 
