@@ -17,7 +17,7 @@ my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/redundancy.in';
+my $File = $ARGV[0] // 'inputs/mother_of_all_warehouses.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -238,7 +238,7 @@ sub do_order {
         Algorithm::Permute::permute {
             my $new = compute_path_dist(\@orders, $DP[$d]);
             @better_orders_order = @orders if $new < $wins;
-            $wins = $new;
+            $wins = $new if $new < $wins;
         } @orders;
         foreach my $oo (@better_orders_order) {
             my $ooloads = $loads{$oo};
