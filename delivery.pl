@@ -17,7 +17,7 @@ my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
 my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
 
-my $File = $ARGV[0] // 'inputs/mother_of_all_warehouses.in';
+my $File = $ARGV[0] // 'inputs/busy_day.in';
 parse($File);
 
 my @DT = (0) x $Drones;    # Drone State
@@ -261,8 +261,8 @@ sub compute_path_dist {
     for (my $i = 0; $i < $#{ $orders }; $i++) {
         $turns += turns_between_positions($Opos[$orders->[$i]], $Opos[$orders->[$i + 1]]);
     }
-    $turns += turns_between_positions($Opos[$orders->[$#{ $orders }]], $Wpos[0])
-      if $File =~ /mother_of_all_warehouses/;
+    my $last_order = $orders->[$#{ $orders }];
+    $turns += turns_between_positions($Opos[$last_order], $Wpos[$CWs[$last_order]->[0]]);
     return $turns;
 }
 
