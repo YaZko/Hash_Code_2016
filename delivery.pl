@@ -15,7 +15,7 @@ use GD;
 # Parse stuff
 my ($Rows, $Cols, $Drones, $Turns, $MaxPayload);
 my @PTW;    # Product Type Weight
-my (@Wpos, @Wstock, @Opos, @Onbitems, @Ostock);
+my (@Wpos, @Wstock, @Opos, @Onbitems, @Odemand);
 
 my $File = $ARGV[0] // 'inputs/busy_day.in';
 parse($File);
@@ -23,7 +23,8 @@ parse($File);
 my @DT = (0) x $Drones;    # Drone State
 my @DP;                    # Drone Position
 my @DI;                    # Drone Inventory
-my @DW = (0) x $Drones;    # Drone Weight
+my @DLO = (0) x $Drones;   # Drone Last Order
+my @DW  = (0) x $Drones;   # Drone Weight
 for (0 .. $Drones - 1) {
     $DP[$_] = $Wpos[0];
 }
@@ -38,9 +39,30 @@ foreach my $o (0 .. $#Opos) {
     $CWs[$o] = closest_warehouses($o);
 }
 
+my @WTD;                   # Warehouse Type Demand
+my @WEQ;                   # Warehouse Entry Queue
+
+foreach my $w (0 .. $#Wpos) {
+    foreach my $t (keys %{ $Wstock[$w] }) {
+        $WTD[$w]{$t} -= $Wstock[$w]{$t};
+    }
+}
+foreach my $o (0 .. $#Opos) {
+    my $cw = $CWs[$o]->[0];
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $WTD[$cw]{$t} += $Odemand[$o]{$t};
+    }
+}
+foreach my $w (0 .. $#Wpos) {
+    foreach my $t (keys %{ $WTD[$w] }) {
+        next unless $WTD[$w]{$t} > 0;
+        $WEQ[$w]{$t} = [];
+    }
+}
+
 say "ColsxRows: ${Cols}x$Rows ";
 say "Start: @{ $Wpos[0] }";
-my @Orders;
+my @Orders = 0 .. $#Opos;
 if ($File =~ /mother_of_all_warehouses/) {
     @Orders = compute_generic_order(\&order_score_mother);
 }
@@ -58,15 +80,15 @@ while (defined(my $order = select_order())) {
     @Orders = compute_generic_order(\&order_score_generic)
       if $Count % 30 == 0 and $File =~ /busy_day/;
 }
-say "ORDERS:", scalar(@Orders);
-die "Not done all orders" unless @Orders == @Odone;
+say "ORDERS:", scalar(@Opos);
+die "Not done all orders" unless @Opos == @Odone;
 check_times();
 write_commands();
 
 my $Score;
 $Score += ceil(100 * (($Turns - $_) / $Turns)) for @Odone;
 say "SCORE:$Score";
-say scalar(@Ostock) * 100;
+say scalar(@Odemand) * 100;
 
 # Draw map
 draw_map();
@@ -77,7 +99,8 @@ sub compute_generic_order {
     my $sub = shift;
     map    { $_->[0] }
       sort { $a->[1] <=> $b->[1] }
-      map  { [ $_, $sub->($_) ] } 0 .. $#Onbitems;
+      map  { [ $_, $sub->($_) ] }
+      grep { $Onbitems[$_] > 0 } @Orders;
 }
 
 sub check_times {
@@ -90,11 +113,12 @@ sub check_order_done {
 }
 
 sub order_score_generic {
-    my $o           = shift;
-    my $wc          = $CWs[$o];
-    my @drone_dists = map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
+    my $o  = shift;
+    my $wc = $CWs[$o];
+    my @drone_dists =
+      map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
       0 .. $Drones - 1;
-    @drone_dists = (sort @drone_dists)[0..3] if $File =~ /busy_day/;
+    @drone_dists = (sort @drone_dists)[ 0 .. 3 ] if $File =~ /busy_day/;
     my $drone_dists_mean = mean(\@drone_dists);
     my @turns_to_w =
       map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
@@ -102,8 +126,8 @@ sub order_score_generic {
     my $weight     = order_weight($o);
     my %t_scores;
 
-    foreach my $t (keys %{ $Ostock[$o] }) {
-        $t_scores{$t} = ceil(($Ostock[$o]{$t} * $PTW[$t]) / $MaxPayload);
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $t_scores{$t} = ceil(($Odemand[$o]{$t} * $PTW[$t]) / $MaxPayload);
     }
     my $types_count = keys %t_scores;
     my $drones_approx;
@@ -136,8 +160,8 @@ sub order_score_mother {
     my $dist_turns = turns_between_positions($Wpos[0], $Opos[$o]);
     my $weight     = order_weight($o);
     my %t_scores;
-    foreach my $t (keys %{ $Ostock[$o] }) {
-        $t_scores{$t} = ceil(($Ostock[$o]{$t} * $PTW[$t]) / $MaxPayload);
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $t_scores{$t} = ceil(($Odemand[$o]{$t} * $PTW[$t]) / $MaxPayload);
     }
     my $types_count   = keys %t_scores;
     my $drones_approx = ceil($weight / $MaxPayload);
@@ -147,8 +171,8 @@ sub order_score_mother {
 sub order_weight {
     my $o = shift;
     my $weight;
-    foreach my $t (keys %{ $Ostock[$o] }) {
-        $weight += $Ostock[$o]{$t} * $PTW[$t];
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $weight += $Odemand[$o]{$t} * $PTW[$t];
     }
     return $weight;
 }
@@ -161,46 +185,101 @@ sub select_order {
 
 sub type_score {
     my ($o, $t) = @_;
-    return - ($Ostock[$o]{$t} * $PTW[$t])
+
+    # XXX find better heuristic… Perhaps demand.
+    return -($Odemand[$o]{$t} * $PTW[$t])
       if $File =~ /mother_of_all_warehouses/;
-    return - ($Ostock[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
-    return $Ostock[$o]{$t} * $PTW[$t];
+    return -($Odemand[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
+
+    #return $Odemand[$o]{$t} * $PTW[$t];
+    return -$WTD[ $CWs[$o]->[0] ]{$t};
 }
 
 sub max_of_type {
     my ($o, $t) = @_;
-    my $n = $Ostock[$o]{$t};
+    my $n = $Odemand[$o]{$t};
     my $q = int($MaxPayload / $PTW[$t]);
     return min($n, $q) * $PTW[$t];
 }
 
 sub mean_pos {
     my ($pos1, $w1, $pos2) = @_;
-    [$w1 * $pos1->[0] + (1 - $w1) * $pos2->[0], $w1 * $pos1->[1] + (1 - $w1) * $pos2->[1]]
+    [ $w1 * $pos1->[0] + (1 - $w1) * $pos2->[0],
+        $w1 * $pos1->[1] + (1 - $w1) * $pos2->[1] ];
+}
+
+sub get_sorted_otypes {
+    my $o = shift;
+    sort { type_score($o, $a) <=> type_score($o, $b) }
+      sort { $PTW[$a] <=> $PTW[$b] }
+      grep { $Odemand[$o]{$_} > 0 and $PTW[$_] > 0 }
+      sort keys %{ $Odemand[$o] };
+}
+
+sub find_good_intermediate_warehouse {
+    my ($w, $d, $warehouses) = @_;
+    my @dw_and_turns =
+      sort { $a->[1] <=> $b->[1] }
+      map {
+        [ $_,
+            turns_between_positions($DP[$d], $Wpos[$_]) +
+              turns_between_positions($Wpos[$_], $Wpos[$w]) ]
+      } @$warehouses;
+    my ($dw, $turns) = @{ shift @dw_and_turns };
+    return ($dw, $turns);
+}
+
+sub take_things_for_another_warehouse_and_unload {
+    my ($d, $dw, $w) = @_;
+    my $loads = take_for_other_warehouse($d, $dw, $w);
+    foreach my $load (@$loads) {
+        my ($q, $t) = @$load;
+        unload($d, $w, $t, $q);
+    }
 }
 
 sub do_order {
-    my $o = shift;
-    my @otypes =
-      sort { type_score($o, $a) <=> type_score($o, $b) }
-      sort { $PTW[$a] <=> $PTW[$b] }
-      grep { $Ostock[$o]{$_} > 0 and $PTW[$_] > 0 }
-      sort keys %{ $Ostock[$o] };
+    my $o      = shift;
+    my @otypes = get_sorted_otypes($o);
     while (1) {
-        my $t = first { $Ostock[$o]{$_} > 0 } @otypes;
-        last unless defined $t;
-        my $q = $Ostock[$o]{$t};
-        my ($w, $qw) = find_warehouse_where_load($t, $q, $o);
+        last unless $Onbitems[$o] > 0;
+        my ($w, $qw) = find_warehouse_where_load($o);
         my $d;
         my $old_w = $w;
-        ($d, $w) = find_drone_for_order($t, $qw, $o, $w);
-        die "do_order:No warehouse found" unless defined $w;
+        ($d, $w) = find_drone_for_order($o, $w);
+        my $waits = 0;
+        while (not defined $w) {
+            wait_turns($d, 5);
+            ($d, $w) = find_drone_for_order($o, $old_w);
+            $waits++;
+            die "Too much waiting" if $waits > 1000;
+        }
+        if (defined $DLO[$d]) {
+            my @wcandidates = grep { $_ != $w } 0 .. $#Wpos;
+            my ($dw, $turns) =
+              find_good_intermediate_warehouse($w, $d, \@wcandidates);
+            if (turns_between_positions($DP[$d], $Wpos[$dw]) >
+                0.66 * turns_between_positions($DP[$d], $Wpos[$w]))
+            {
+                my @dwcandidates = grep { $_ != $w and $_ != $dw } 0 .. $#Wpos;
+                my ($idw, $iturns) =
+                  find_good_intermediate_warehouse($dw, $d, \@dwcandidates);
+                if ($iturns <
+                    1.2 * turns_between_positions($DP[$d], $Wpos[$dw]))
+                {
+                    take_things_for_another_warehouse_and_unload($d, $idw, $dw);
+                }
+            }
+            if ($turns < 1.2 * turns_between_positions($DP[$d], $Wpos[$w])) {
+                take_things_for_another_warehouse_and_unload($d, $dw, $w);
+            }
+        }
 
         my %loads;
         my $first_loads = salvage_warehouse(\@otypes, $o, $d, $w);
         $loads{$o} = [];
         push @{ $loads{$o} }, @$first_loads;
-        die "No first loads" unless @{ $loads{$o} };
+        die "No first loads: $DW[$d]" unless @{ $loads{$o} };
         if ($DW[$d] < $MaxPayload) {
 
             # secundary orders for $d
@@ -209,10 +288,12 @@ sub do_order {
             $factor = 0.30 if $File =~ /mother_of_all_warehouses/;
             $factor = 0.30 if $File =~ /redundancy/;
             my @orders = grep {
-                $Onbitems[$_] > 0
-                and $_ != $o
-                and turns_between_positions($Opos[$o], $Opos[$_])
-                  < $factor * turns_between_positions($Opos[$o], $Wpos[$old_w])
+                      $Onbitems[$_] > 0
+                  and $_ != $o
+                  and
+                  turns_between_positions(mean_pos($Opos[$o], 0.9, $Wpos[$w]),
+                    $Opos[$_]) <
+                  $factor * turns_between_positions($Opos[$o], $Wpos[$old_w])
             } @Orders;
             my $payload_factor = 5 / 6;
             $payload_factor = 4 / 5 if $File =~ /mother_of_all_warehouses/;
@@ -220,11 +301,7 @@ sub do_order {
 
             for my $o2 (@orders) {
                 if ($DW[$d] < $payload_factor * $MaxPayload) {
-                    my @otypes =
-                      sort { type_score($o2, $a) <=> type_score($o2, $b) }
-                      sort { $PTW[$a] <=> $PTW[$b] }
-                      grep { $Ostock[$o2]{$_} > 0 and $PTW[$_] > 0 }
-                      sort keys %{ $Ostock[$o2] };
+                    my @otypes = get_sorted_otypes($o2);
                     my $newloads = salvage_warehouse(\@otypes, $o2, $d, $w);
                     next unless @$newloads;
                     $loads{$o2} = [];
@@ -232,14 +309,15 @@ sub do_order {
                 }
             }
         }
-        my @orders = sort keys %loads;
+        my @orders              = sort keys %loads;
         my @better_orders_order = @orders;
-        my $wins = compute_path_dist(\@orders, $DP[$d]);
+        my $wins                = compute_path_dist(\@orders, $DP[$d]);
         Algorithm::Permute::permute {
             my $new = compute_path_dist(\@orders, $DP[$d]);
             @better_orders_order = @orders if $new < $wins;
-            $wins = $new if $new < $wins;
-        } @orders;
+            $wins                = $new    if $new < $wins;
+        }
+        @orders;
         foreach my $oo (@better_orders_order) {
             my $ooloads = $loads{$oo};
             foreach my $load (@$ooloads) {
@@ -257,26 +335,57 @@ sub do_order {
 
 sub compute_path_dist {
     my ($orders, $init_pos) = @_;
-    my $turns = turns_between_positions($init_pos, $Opos[$orders->[0]]);
-    for (my $i = 0; $i < $#{ $orders }; $i++) {
-        $turns += turns_between_positions($Opos[$orders->[$i]], $Opos[$orders->[$i + 1]]);
+    my $turns = turns_between_positions($init_pos, $Opos[ $orders->[0] ]);
+    for (my $i = 0 ; $i < $#{$orders} ; $i++) {
+        $turns += turns_between_positions($Opos[ $orders->[$i] ],
+            $Opos[ $orders->[ $i + 1 ] ]);
     }
-    my $last_order = $orders->[$#{ $orders }];
-    $turns += turns_between_positions($Opos[$last_order], $Wpos[$CWs[$last_order]->[0]]);
+    my $last_order = $orders->[ $#{$orders} ];
+    $turns += turns_between_positions($Opos[$last_order],
+        $Wpos[ $CWs[$last_order]->[0] ]);
     return $turns;
 }
 
 sub salvage_warehouse {
     my ($otypes, $o, $d, $w) = @_;
     my @loads;
+    my $arrival_time = $DT[$d] + turns_between_positions($DP[$d], $Wpos[$w]);
     TYPE: foreach my $t (@$otypes) {
-        my $q = $Ostock[$o]{$t};
+        my $q = $Odemand[$o]{$t};
         while ($q > 0) {
-            if (    $Wstock[$w]{$t} >= $q
+            if (get_stock($w, $t, $arrival_time) >= $q
                 and $q * $PTW[$t] + $DW[$d] <= $MaxPayload)
             {
                 push @loads, [ $q, $t, $o ];
-                load($d, $q, $t, $w, $o);
+                load_for_order($d, $w, $t, $q, $o);
+                next TYPE;
+            }
+            $q--;
+        }
+    }
+    return \@loads;
+}
+
+sub take_for_other_warehouse {
+    my ($d, $dw, $w) = @_;
+    my $arrival_time =
+      turns_between_positions($Wpos[$dw], $Wpos[$w]) +
+      turns_between_positions($DP[$d],    $Wpos[$dw]);
+    my @needed_types =
+      map  { $_->[0] }
+      sort { $a->[1] <=> $b->[1] }
+      map  { [ $_, get_stock($w, $_, $DT[$d] + $arrival_time) ] }
+      grep { $WTD[$w]{$_} > 0 }
+      sort keys %{ $WTD[$w] };
+    my @loads;
+    TYPE: foreach my $t (@needed_types) {
+        my $offer = -$WTD[$dw]{$t};
+        next unless defined $offer and $offer > 0;
+        my $q = min($offer, $WTD[$w]{$t}, $Wstock[$dw]{$t});    # XXX
+        while ($q > 0) {
+            if ($q * $PTW[$t] + $DW[$d] <= $MaxPayload) {
+                push @loads, [ $q, $t ];
+                load_for_warehouse($d, $dw, $t, $q, $w);
                 next TYPE;
             }
             $q--;
@@ -286,12 +395,12 @@ sub salvage_warehouse {
 }
 
 sub find_drone_for_order {
-    my ($t, $q, $o, $w) = @_;
+    my ($o, $w) = @_;
     my @usable_drones = grep {
         $DT[$_] +
           turns_between_positions($DP[$_], $Wpos[$w]) +
           turns_between_positions($DP[$_], $Opos[$o]) <= $Turns
-    } 0 .. $#DT;
+    } 0 .. $#DT;    # XXX This check is not totally correct, but ok in practice
     unless (@usable_drones) {
         die "No usable drones…";
     }
@@ -306,35 +415,63 @@ sub find_drone_for_order {
               turns_between_positions($DP[$b], $Wpos[$w])
         } @usable_drones;
     }
-    $w = find_better_warehouse_where_load($t, $q, $o, $d);
+    $w = find_better_warehouse_where_load($o, $d);
     return ($d, $w);
 }
 
 sub warehouse_suitability_for_order {
     my ($w, $o) = @_;
-    my $weight;
-    foreach my $t (keys %{ $Ostock[$o] }) {
-        $weight += min($Wstock[$w]{$t}, $Ostock[$o]{$t}) * $PTW[$t];
-    }
+    warehouse_suitability_for_order_at_time($w, $o, $Turns);
+}
+
+sub warehouse_revised_suitability_for_order {
+    my ($w, $d, $o) = @_;
+    my $arrival_time = $DT[$d] + turns_between_positions($DP[$d], $Wpos[$w]);
+    warehouse_suitability_for_order_at_time($w, $o, $arrival_time);
+}
+
+sub warehouse_suitability_for_order_at_time {
+    my ($w, $o, $time) = @_;
+    my $weight = compute_warehouse_weight_for_order($w, $o, $time);
+    compute_suitability_from_weight($weight);
+}
+
+sub compute_suitability_from_weight {
+    my $weight = shift;
+    return 999 unless $weight;
     my $suitable = $weight / $MaxPayload > 1 ? 1 : $weight / $MaxPayload;
     return 2 - $suitable;
 }
 
+sub compute_warehouse_weight_for_order {
+    my ($w, $o, $time) = @_;
+    my $weight;
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $weight += min(get_stock($w, $t, $time), $Odemand[$o]{$t}) * $PTW[$t];
+    }
+    die "\$Onbitems[$o] == 0" unless $Onbitems[$o] > 0;
+    return $weight;
+}
+
 sub find_warehouse_where_load {
-    my ($t, $q, $o) = @_;
+    my ($o) = @_;
     my @warehouses =
       map  { $_->[0] }
       sort { $a->[1] <=> $b->[1] }
       map {
-        [ $_,
+        [
+            $_,
             turns_between_positions($Wpos[$_], $Opos[$o]) *
-              warehouse_suitability_for_order($_, $o) ]
+              warehouse_suitability_for_order($_, $o)
+        ]
       } 0 .. $#Wstock;
-    pick_warehouse_to_load(\@warehouses, $t, $q);
+    return shift @warehouses;
 }
 
 sub find_better_warehouse_where_load {
-    my ($t, $q, $o, $d) = @_;
+    my ($o, $d) = @_;
+    my @suitabilities =
+      map { warehouse_revised_suitability_for_order($_, $d, $o) } 0 .. $#Wstock;
     my @warehouses =
       map  { $_->[0] }
       sort { $a->[1] <=> $b->[1] }
@@ -344,26 +481,11 @@ sub find_better_warehouse_where_load {
             (
                 turns_between_positions($Wpos[$_], $Opos[$o]) +
                   turns_between_positions($DP[$d], $Wpos[$_])
-            ) * warehouse_suitability_for_order($_, $o)
+            ) * $suitabilities[$_]
         ]
-      } 0 .. $#Wstock;
-    my ($w) = pick_warehouse_to_load(\@warehouses, $t, $q);
-    return $w;
-}
-
-sub pick_warehouse_to_load {
-    my ($warehouses, $t, $q) = @_;
-    my $qw;
-    while ($q > 0) {
-        foreach my $ww (@$warehouses) {
-            if ($Wstock[$ww]{$t} and $Wstock[$ww]{$t} >= $q) {
-                $qw = $q;
-                return ($ww, $qw);
-            }
-        }
-        $q--;
-    }
-    die "pick_warehouse_to_load:no warehouse found:$t\n";
+      }
+      grep { $suitabilities[$_] < 2 } 0 .. $#Wstock;
+    return shift @warehouses;
 }
 
 sub check_weight {
@@ -371,20 +493,64 @@ sub check_weight {
     return ($DW[$d] <= $MaxPayload && $DW[$d] >= 0);
 }
 
-sub load {
-    my ($d, $q, $t, $w, $o) = @_;
+sub load_for_order {
+    my ($d, $w, $t, $q, $o) = @_;
     push @CMDS, [ $d, "L", $w, $t, $q ];
     $DI[$d]{$t} += $q;
     $DW[$d] += $q * $PTW[$t];
+    $WTD[ $CWs[$o]->[0] ]{$t} -= $q;
     die "load:$d,$w,$t,$q:too much load" unless check_weight($d);
     $Wstock[$w]{$t} -= $q;
-    die "load:$d,$w,$t,$q:no stock" if $Wstock[$w]{$t} < 0;
+    $WTD[$w]{$t} += $q if $w != $CWs[$o]->[0];    # XXX
+    $DT[$d] += turns_between_positions($DP[$d], $Wpos[$w]);
+    die "load:$d,$w,$t,$q:no stock" if get_stock($w, $t, $DT[$d]) < 0;
     $DT[$d] += 1;
+    $DP[$d] = $Wpos[$w];
+    $Odemand[$o]{$t} -= $q;
+    $Onbitems[$o] -= $q;
+    die "deliver:$d,$o,$t,$q:order was less than that" if $Onbitems[$o] < 0;
+}
+
+sub load_for_warehouse {
+    my ($d, $dw, $t, $q, $w) = @_;
+    push @CMDS, [ $d, "L", $dw, $t, $q ];
+    $DI[$d]{$t} += $q;
+    $DW[$d] += $q * $PTW[$t];
+    die "load:$d,$dw,$t,$q:too much load" unless check_weight($d);
+    $Wstock[$dw]{$t} -= $q;
+    $DT[$d] += turns_between_positions($DP[$d], $Wpos[$dw]);
+    die "load:$d,$w,$t,$q:no stock" if get_stock($dw, $t, $DT[$d]) < 0;
+    $WTD[$dw]{$t} += $q;
+    die "load:$d,$w,$t,$q:wanted" if $WTD[$dw]{$t} > 0;
+    $WTD[$w]{$t} -= $q;
+    die "load:$d,$w,$t,$q:not wanted" if $WTD[$w]{$t} < 0;
+    $DT[$d] += 1;
+    $DP[$d] = $Wpos[$dw];
+}
+
+sub unload {
+    my ($d, $w, $t, $q) = @_;
+    push @CMDS, [ $d, "U", $w, $t, $q ];
     $DT[$d] += turns_between_positions($DP[$d], $Wpos[$w]);
     $DP[$d] = $Wpos[$w];
-    $Ostock[$o]{$t} -= $q;
-    $Onbitems[$o]   -= $q;
-    die "deliver:$d,$o,$t,$q:order was less than that" if $Onbitems[$o] < 0;
+    $DW[$d] -= $q * $PTW[$t];
+    push @{ $WEQ[$w]{$t} }, [ $q, $DT[$d] ];
+
+    # This means that at $DT[$d] it is possible to do a load
+    $DT[$d] += 1;
+
+    # NOTE: After because unloads are done before loads
+}
+
+sub get_stock {
+    my ($w, $t, $turn) = @_;
+    my $stock = $Wstock[$w]{$t} // 0;
+    my $stocked_unloads = 0;
+    if (defined $WEQ[$w]{$t}) {
+        $stocked_unloads =
+          sum(map { $_->[0] } grep { $_->[1] < $turn } @{ $WEQ[$w]{$t} }) || 0;
+    }
+    return $stock + $stocked_unloads;
 }
 
 sub deliver {
@@ -394,10 +560,18 @@ sub deliver {
     $DW[$d] -= $q * $PTW[$t];
     $DT[$d] += 1;
     $DT[$d] += turns_between_positions($DP[$d], $Opos[$o]);
-    $DP[$d] = $Opos[$o];
+    $DP[$d]  = $Opos[$o];
+    $DLO[$d] = $o;
     die "deliver:$d,$o,$t,$q:not enough in inventory for that"
       if $DI[$d]{$t} < 0;
     die "deliver:$d,$o,$t,$q:weight problem" unless check_weight($d);
+}
+
+sub wait_turns {
+    my ($d, $turns) = @_;
+    push @CMDS, [ $d, "W", $turns ];
+    $DT[$d] += $turns;
+    die "wait:wait too many turns:$d,$turns" if $DT[$d] > $Turns;
 }
 
 sub turns_between_positions {
@@ -441,7 +615,7 @@ sub parse {
         my $items = <$fh>;
         chomp $items;
         while ($items =~ /(\d+)/g) {
-            $Ostock[$o]{$1}++;
+            $Odemand[$o]{$1}++;
         }
     }
 }
@@ -474,7 +648,7 @@ sub draw_map {
         $im->filledEllipse($x, $y, 5, 5, $blue);
         $count++;
     }
-    foreach my $o (@Orders[ 0 .. 300 ]) {
+    foreach my $o (sort { $Odone[$a] <=> $Odone[$b] } 0 .. 200) {
         my $pos = $Opos[$o];
         my ($x, $y) = map { $_ * 3 } @$pos;
         $im->filledEllipse($x, $y, 10, 10, $blue);
