@@ -259,18 +259,18 @@ sub do_order {
             my ($dw, $turns) =
               find_good_intermediate_warehouse($w, $d, \@wcandidates);
             if (turns_between_positions($DP[$d], $Wpos[$dw]) >
-                0.66 * turns_between_positions($DP[$d], $Wpos[$w]))
+                0.5 * turns_between_positions($DP[$d], $Wpos[$w]))
             {
                 my @dwcandidates = grep { $_ != $w and $_ != $dw } 0 .. $#Wpos;
                 my ($idw, $iturns) =
                   find_good_intermediate_warehouse($dw, $d, \@dwcandidates);
                 if ($iturns <
-                    1.2 * turns_between_positions($DP[$d], $Wpos[$dw]))
+                    1.25 * turns_between_positions($DP[$d], $Wpos[$dw]))
                 {
                     take_things_for_another_warehouse_and_unload($d, $idw, $dw);
                 }
             }
-            if ($turns < 1.2 * turns_between_positions($DP[$d], $Wpos[$w])) {
+            if ($turns < 1.20 * turns_between_positions($DP[$d], $Wpos[$w])) {
                 take_things_for_another_warehouse_and_unload($d, $dw, $w);
             }
         }
