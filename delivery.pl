@@ -114,33 +114,34 @@ sub check_order_done {
 
 sub order_score_generic {
     my $o  = shift;
-    my $wc = $CWs[$o];
-    my @drone_dists =
-      map { turns_between_positions($DP[$_], $Wpos[ $wc->[0] ]) }
-      0 .. $Drones - 1;
-    @drone_dists = (sort @drone_dists)[ 0 .. 3 ] if $File =~ /busy_day/;
-    my $drone_dists_mean = mean(\@drone_dists);
-    my @turns_to_w =
-      map { turns_between_positions($Wpos[$_], $Opos[$o]) } 0 .. $#Wpos;
-    my $dist_turns = mean(\@turns_to_w);
-    my $weight     = order_weight($o);
-    my %t_scores;
+    my $closest_warehouses = closest_warehouses($o);
 
+    my %t_scores;
+    my @weights = (0) x @Wpos;
+    my %stock;
+    foreach my $t (keys %{ $Odemand[$o] }) {
+        $stock{$t} = $Odemand[$o]{$t}
+    }
+    foreach my $w (@$closest_warehouses) {
+        foreach my $t (keys %{ $Odemand[$o] }) {
+            my $q = min($Odemand[$o]{$t}, -$WTD[$w]{$t}, $stock{$t});
+            next unless $q > 0;
+            $stock{$t} -= $q;
+            $weights[$w] += $q * $PTW[$t];
+        }
+    }
     foreach my $t (keys %{ $Odemand[$o] }) {
         $t_scores{$t} = ceil(($Odemand[$o]{$t} * $PTW[$t]) / $MaxPayload);
     }
     my $types_count = keys %t_scores;
-    my $drones_approx;
-    $drones_approx = ceil($weight / $MaxPayload) * log(4 + $types_count);
-    $drones_approx = ceil($weight / $MaxPayload) * log(3.9 + $types_count)
-      if $File =~ /redundancy/;
-
-    # Some "random" magic in numbers :)
-    return $drones_approx * (3 * $dist_turns / 2.3 + $drone_dists_mean / 1.5) +
-      2 * sum(values %t_scores)
-      if $File =~ /redundancy/;
-    return $drones_approx * (3 * $dist_turns / 2 + $drone_dists_mean / 2) +
-      2 * sum(values %t_scores);
+    my @drones_approx = map { ceil($_ / $MaxPayload) * log(4 + $types_count) } @weights;
+    my $turns;
+    foreach my $w (@$closest_warehouses) {
+        $turns += turns_between_positions($Wpos[$w], $Opos[$o]) * $drones_approx[$w]
+          if $drones_approx[$w]; # don't compute turns if not necessary
+    }
+    $turns += 2 * sum(values %t_scores);
+    return $turns;
 }
 
 sub closest_warehouses {
@@ -254,7 +255,10 @@ sub do_order {
             $waits++;
             die "Too much waiting" if $waits > 1000;
         }
-        if (defined $DLO[$d]) {
+        if (defined $DLO[$d] and $File !~ /mother_of_all_warehouses/) {
+            my $mid_factor = 0.5;
+            my $middist_factor = 1.25;
+            my $dist_factor = 1.20;
             my @wcandidates = grep { $_ != $w } 0 .. $#Wpos;
             my ($dw, $turns) =
               find_good_intermediate_warehouse($w, $d, \@wcandidates);
