@@ -133,7 +133,7 @@ sub order_score_generic {
     foreach my $t (keys %{ $Odemand[$o] }) {
         $t_scores{$t} = ceil(($Odemand[$o]{$t} * $PTW[$t]) / $MaxPayload);
     }
-    my $types_count = keys %t_scores;
+    my $types_count   = keys %t_scores;
     my @drones_approx = map { ceil($_ / $MaxPayload) * log(4 + $types_count) } @weights;
     my $turns;
     foreach my $w (@$closest_warehouses) {
@@ -187,13 +187,10 @@ sub select_order {
 sub type_score {
     my ($o, $t) = @_;
 
-    # XXX find better heuristic… Perhaps demand.
     return -($Odemand[$o]{$t} * $PTW[$t])
       if $File =~ /mother_of_all_warehouses/;
     return -($Odemand[$o]{$t} * $PTW[$t]) if $File =~ /redundancy/;
-
-    #return $Odemand[$o]{$t} * $PTW[$t];
-    return -$WTD[ $CWs[$o]->[0] ]{$t};
+    return -$WTD[ $CWs[$o]->[0] ]{$t} + $Wstock[ $CWs[$o]->[0] ]{$t};
 }
 
 sub max_of_type {
@@ -274,7 +271,7 @@ sub do_order {
                     take_things_for_another_warehouse_and_unload($d, $idw, $dw);
                 }
             }
-            if ($turns < 1.20 * turns_between_positions($DP[$d], $Wpos[$w])) {
+            if ($turns ** 1.04 < 1.20 * turns_between_positions($DP[$d], $Wpos[$w]) ** 1.04) {
                 take_things_for_another_warehouse_and_unload($d, $dw, $w);
             }
         }
@@ -372,9 +369,10 @@ sub salvage_warehouse {
 
 sub take_for_other_warehouse {
     my ($d, $dw, $w) = @_;
+    my $time_to_dw   = turns_between_positions($DP[$d], $Wpos[$dw]);
     my $arrival_time =
-      turns_between_positions($Wpos[$dw], $Wpos[$w]) +
-      turns_between_positions($DP[$d],    $Wpos[$dw]);
+      $time_to_dw +
+      turns_between_positions($Wpos[$dw], $Wpos[$w]);
     my @needed_types =
       map  { $_->[0] }
       sort { $a->[1] <=> $b->[1] }
@@ -385,7 +383,7 @@ sub take_for_other_warehouse {
     TYPE: foreach my $t (@needed_types) {
         my $offer = -$WTD[$dw]{$t};
         next unless defined $offer and $offer > 0;
-        my $q = min($offer, $WTD[$w]{$t}, $Wstock[$dw]{$t});    # XXX
+        my $q = min($offer, $WTD[$w]{$t}, get_stock($dw, $t, $time_to_dw));
         while ($q > 0) {
             if ($q * $PTW[$t] + $DW[$d] <= $MaxPayload) {
                 push @loads, [ $q, $t ];
@@ -652,7 +650,7 @@ sub draw_map {
         $im->filledEllipse($x, $y, 5, 5, $blue);
         $count++;
     }
-    foreach my $o (sort { $Odone[$a] <=> $Odone[$b] } 0 .. 200) {
+    foreach my $o ((sort { $Odone[$a] <=> $Odone[$b] } 0 .. $#Opos)[0 .. 200]) {
         my $pos = $Opos[$o];
         my ($x, $y) = map { $_ * 3 } @$pos;
         $im->filledEllipse($x, $y, 10, 10, $blue);
